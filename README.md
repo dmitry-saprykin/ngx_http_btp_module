@@ -35,3 +35,7 @@ No data packet will be sent if a request is finished with a final status from th
 
 Example:  
 `btp_ignore_codes 200-399,499;`
+
+`btp_script_skip_slashes` - numeric. Default is 4.
+Skip part of FastCGI upstream 'PATH_TRANSLATED' variable up to n-th slash.
+If there are no such number of slashes in 'PATH_TRANSLATED' filename part is left untouched.

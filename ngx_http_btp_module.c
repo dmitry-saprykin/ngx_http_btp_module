@@ -112,6 +112,7 @@ typedef struct
 	ngx_flag_t enable;
 	ngx_array_t *ignore_codes;
 	ngx_url_t server;
+	ngx_int_t skip_slashes;
 	char *buffer;
 	size_t buffer_size;
 	size_t buffer_used_len;
@@ -138,7 +139,7 @@ typedef struct
 }
 ngx_http_btp_custom_ctx_t;
 
-ngx_str_t btp_fastcgi_scriptname_param = ngx_string("SCRIPT_NAME");
+ngx_str_t btp_fastcgi_scriptname_param = ngx_string("PATH_TRANSLATED");
 
 static void *ngx_http_btp_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_btp_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
@@ -147,7 +148,7 @@ static ngx_int_t ngx_http_btp_init(ngx_conf_t *cf);
 static char *ngx_http_btp_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_btp_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
-static void ngx_http_btp_get_scriptname(ngx_uint_t status, ngx_http_request_t *r, char *result);    
+static void ngx_http_btp_get_scriptname(ngx_uint_t status, ngx_http_request_t *r, char *result, ngx_int_t skip_slashes);
 
 static ngx_command_t  ngx_http_btp_commands[] = {
   {
@@ -172,6 +173,14 @@ static ngx_command_t  ngx_http_btp_commands[] = {
     ngx_http_btp_server,
     NGX_HTTP_LOC_CONF_OFFSET,
     0,
+    NULL
+  },
+  {
+    ngx_string("btp_script_skip_slashes"),
+    NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
+    ngx_conf_set_num_slot,
+    NGX_HTTP_LOC_CONF_OFFSET,
+    offsetof(ngx_http_btp_loc_conf_t, skip_slashes),
     NULL
   },
 
@@ -1096,6 +1105,7 @@ ngx_int_t ngx_http_btp_handler(ngx_http_request_t *r)
 {
   ngx_http_btp_loc_conf_t  *lcf;
   ngx_uint_t status, i, j, k, l, *pcode;
+  ngx_int_t skip_slashes;
 
   ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http btp handler");
 
@@ -1192,7 +1202,9 @@ ngx_int_t ngx_http_btp_handler(ngx_http_request_t *r)
 
       request->status = status;
       request->request_total = request_total;
-      ngx_http_btp_get_scriptname(status, r, request->script_name);
+
+      skip_slashes = (lcf->skip_slashes == NGX_CONF_UNSET) ? 0 : lcf->skip_slashes;
+      ngx_http_btp_get_scriptname(status, r, request->script_name, skip_slashes);
 
       if(r->upstream_receive_finish_sec) {
         request->flags |= BTP_FLAG_CLIENT_SEND;
@@ -1438,7 +1450,7 @@ static void ngx_http_btp_get_fastcgi_scriptname(ngx_http_request_t *r, ngx_str_t
   }
 }
 
-static void ngx_http_btp_get_scriptname(ngx_uint_t status, ngx_http_request_t *r, char result[BTP_STR_BUFFER_SIZE])
+static void ngx_http_btp_get_scriptname(ngx_uint_t status, ngx_http_request_t *r, char result[BTP_STR_BUFFER_SIZE], ngx_int_t skip_slashes)
 {
   ngx_str_t *scriptname;
   size_t scriptname_len = 0;
@@ -1454,15 +1466,37 @@ static void ngx_http_btp_get_scriptname(ngx_uint_t status, ngx_http_request_t *r
     if( r->upstream )
     {
       scriptname = ngx_pcalloc(r->pool, sizeof(ngx_str_t));
-      if(scriptname != NULL)
+      if( scriptname != NULL )
       {
         scriptname->data = NULL;
         ngx_http_btp_get_fastcgi_scriptname(r, scriptname);
         if( scriptname->len > 0)
         {
-          scriptname_len = (scriptname->len >= BTP_STR_BUFFER_SIZE)
-            ? BTP_STR_BUFFER_SIZE - 1 : scriptname->len;
-          memcpy(result, scriptname->data, scriptname_len);
+          u_char *name_start = scriptname->data;
+          u_char *name_finish = scriptname->data + scriptname->len;
+
+          ngx_log_debug3(
+            NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+            "BTP fastcgi scriptname source: \"%*s\" skip: %i",
+            scriptname->len, scriptname->data, skip_slashes
+          );
+
+          //skip some slashes data
+          while( skip_slashes > 0 ) {
+            u_char *result = ngx_strlchr(name_start, name_finish, '/');
+            if( result == NULL ) {
+              break;
+            }
+            name_start = result + 1;
+            --skip_slashes;
+          }
+
+          if( name_finish > name_start ) {
+            scriptname_len = name_finish - name_start;
+            scriptname_len = (scriptname_len >= BTP_STR_BUFFER_SIZE)
+              ? BTP_STR_BUFFER_SIZE - 1 : scriptname_len;
+            memcpy(result, name_start, scriptname_len);
+          }
           ngx_pfree(r->pool, scriptname->data);
         }
         ngx_pfree(r->pool, scriptname);
@@ -1499,6 +1533,7 @@ static void *ngx_http_btp_create_loc_conf(ngx_conf_t *cf)
 	conf->socket.fd = -1;
 	conf->buffer_size = NGX_CONF_UNSET_SIZE;
   conf->request_buffer_used = 0;
+  conf->skip_slashes = NGX_CONF_UNSET;
 
 	return conf;
 }
@@ -1509,6 +1544,7 @@ static char *ngx_http_btp_merge_loc_conf(ngx_conf_t *cf, void *parent, void *chi
 	ngx_http_btp_loc_conf_t *conf = child;
 
 	ngx_conf_merge_value(conf->enable, prev->enable, 0);
+	ngx_conf_merge_value(conf->skip_slashes, prev->skip_slashes, 4);
 
 	if (conf->ignore_codes == NULL)
 	{

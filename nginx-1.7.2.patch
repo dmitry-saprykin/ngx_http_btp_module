@@ -1,0 +1,83 @@
+diff -Naur '--exclude=objs' '--exclude=Makefile' ./nginx-1.7.2.orig/src/http/ngx_http_request.h ./nginx-1.7.2/src/http/ngx_http_request.h
+--- ./nginx-1.7.2.orig/src/http/ngx_http_request.h	2014-06-17 16:51:26.000000000 +0400
++++ ./nginx-1.7.2/src/http/ngx_http_request.h	2014-06-25 19:06:32.647656464 +0400
+@@ -414,6 +414,20 @@
+ 
+     ngx_http_variable_value_t        *variables;
+ 
++    //timings
++    time_t                           upstream_send_start_sec;
++    ngx_msec_t                       upstream_send_start_msec;
++    time_t                           upstream_send_finish_sec;
++    ngx_msec_t                       upstream_send_finish_msec;
++
++    time_t                           upstream_receive_start_sec;
++    ngx_msec_t                       upstream_receive_start_msec;
++    time_t                           upstream_receive_finish_sec;
++    ngx_msec_t                       upstream_receive_finish_msec;
++
++    time_t                           upstream_total_sec;
++    ngx_msec_t                       upstream_total_msec;
++
+ #if (NGX_PCRE)
+     ngx_uint_t                        ncaptures;
+     int                              *captures;
+diff -Naur '--exclude=objs' '--exclude=Makefile' ./nginx-1.7.2.orig/src/http/ngx_http_upstream.c ./nginx-1.7.2/src/http/ngx_http_upstream.c
+--- ./nginx-1.7.2.orig/src/http/ngx_http_upstream.c	2014-06-17 16:51:27.000000000 +0400
++++ ./nginx-1.7.2/src/http/ngx_http_upstream.c	2014-06-25 19:04:24.727655749 +0400
+@@ -1209,6 +1209,11 @@
+         tp = ngx_timeofday();
+         u->state->response_sec = tp->sec - u->state->response_sec;
+         u->state->response_msec = tp->msec - u->state->response_msec;
++
++        r->upstream_total_sec = u->state->response_sec;
++        r->upstream_total_msec = u->state->response_msec;
++        r->upstream_send_finish_sec = tp->sec;
++        r->upstream_send_finish_msec = tp->msec;
+     }
+ 
+     u->state = ngx_array_push(r->upstream_states);
+@@ -1224,6 +1229,9 @@
+     u->state->response_sec = tp->sec;
+     u->state->response_msec = tp->msec;
+ 
++    r->upstream_receive_start_sec = tp->sec;
++    r->upstream_receive_start_msec = tp->msec;
++
+     rc = ngx_event_connect_peer(&u->peer);
+ 
+     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+@@ -1668,6 +1676,10 @@
+         c->tcp_nopush = NGX_TCP_NOPUSH_UNSET;
+     }
+ 
++    ngx_time_t *tp = ngx_timeofday();
++    r->upstream_receive_finish_sec = tp->sec;
++    r->upstream_receive_finish_msec = tp->msec;
++
+     ngx_add_timer(c->read, u->conf->read_timeout);
+ 
+     if (c->read->ready) {
+@@ -1779,6 +1791,10 @@
+ #endif
+     }
+ 
++    ngx_time_t *tp = ngx_timeofday();
++    r->upstream_send_start_sec = tp->sec;
++    r->upstream_send_start_msec = tp->msec;
++
+     for ( ;; ) {
+ 
+         n = c->recv(c, u->buffer.last, u->buffer.end - u->buffer.last);
+@@ -3560,6 +3576,11 @@
+         u->state->response_sec = tp->sec - u->state->response_sec;
+         u->state->response_msec = tp->msec - u->state->response_msec;
+ 
++        r->upstream_total_sec = u->state->response_sec;
++        r->upstream_total_msec = u->state->response_msec;
++        r->upstream_send_finish_sec = tp->sec;
++        r->upstream_send_finish_msec = tp->msec;
++
+         if (u->pipe && u->pipe->read_length) {
+             u->state->response_length = u->pipe->read_length;
+         }
